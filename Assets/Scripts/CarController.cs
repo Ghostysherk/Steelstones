@@ -1,6 +1,6 @@
-using UnityEngine;
+﻿using UnityEngine;
 
-public class SimpleCarController : MonoBehaviour
+public class CarController : MonoBehaviour
 {
     [Header("References")]
     public Transform cube;
@@ -36,15 +36,11 @@ public class SimpleCarController : MonoBehaviour
 
         // W = vooruit
         if (Input.GetKey(KeyCode.W))
-        {
             input += 1f;
-        }
 
         // S = achteruit
         if (Input.GetKey(KeyCode.S))
-        {
             input -= 1f;
-        }
 
         float targetSpeed = input * maxSpeed;
 
@@ -58,35 +54,29 @@ public class SimpleCarController : MonoBehaviour
             rate * Time.fixedDeltaTime
         );
 
-        // Beweging
         cube.position += forward * currentSpeed * Time.fixedDeltaTime;
     }
 
     void HandleRotation()
     {
-        // NIET draaien als je stilstaat
+        // Niet draaien als je stilstaat
         if (Mathf.Abs(currentSpeed) < 0.05f)
             return;
 
-        float rotationInput = 0f;
+        float rotation = 0f;
 
         // A = links
         if (Input.GetKey(KeyCode.A))
-        {
-            rotationInput -= 1f;
-        }
+            rotation -= 1f;
 
         // D = rechts
         if (Input.GetKey(KeyCode.D))
-        {
-            rotationInput += 1f;
-        }
+            rotation += 1f;
 
-        if (rotationInput != 0f)
-        {
-            float rotation = rotationInput * rotationSpeed * Time.deltaTime;
-
-            cube.Rotate(0f, rotation, 0f);
-        }
+        cube.Rotate(
+            0f,
+            rotation * rotationSpeed * Time.deltaTime,
+            0f
+        );
     }
 }
