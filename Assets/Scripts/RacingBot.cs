@@ -1,620 +1,298 @@
+
 using UnityEngine;
 
 public class RacingBot : MonoBehaviour
 {
     [Header("References")]
-    [Tooltip("Sleep hier het Collider GameObject in dat de Rigidbody heeft.")]
     public Rigidbody carRigidbody;
-
-    [Tooltip("Sleep hier Forward Refrence in.")]
     public Transform forwardReference;
-
-    [Tooltip("Sleep hier je RacePath object in.")]
     public Transform racePath;
 
-
-    [Header("Movement Settings")]
+    [Header("Movement")]
     public float maxSpeed = 4f;
     public float acceleration = 2f;
-    public float deceleration = 1.5f;
 
-
-    [Header("Steering Settings")]
-    public float maxRotationSpeed = 120f;
-    public float steeringAcceleration = 2.5f;
-    public float steeringReturnSpeed = 4f;
-
-    [Range(0f, 1f)]
-    public float minimumSteeringStrength = 0.1f;
-
-    [Tooltip("Hoe agressief de AI naar een waypoint stuurt.")]
-    public float steeringSensitivity = 1.5f;
-
+    [Header("Rotation")]
+    public float rotationSpeed = 180f;
 
     [Header("Path Settings")]
-    [Tooltip("Hoe dichtbij de bot bij een waypoint moet komen.")]
-    public float waypointReachDistance = 3f;
+    public bool loopPath = true;
 
-    [Tooltip("Hoeveel waypoints vooruit de AI kijkt. 1 = huidige waypoint.")]
-    public int lookAheadPoints = 1;
+    [Tooltip("Hoe hoog de auto boven de waypoints rijdt.")]
+    public float heightOffset = 0f;
 
-
-    [Header("Corner Settings")]
-    public bool slowDownForCorners = true;
-
-    [Tooltip("Vanaf deze hoek begint de AI af te remmen.")]
-    public float cornerSlowDownAngle = 35f;
-
-    [Range(0.1f, 1f)]
-    public float cornerSpeedMultiplier = 0.65f;
-
-
-    [Header("Stuck Recovery")]
-    public bool enableStuckRecovery = true;
-
-    [Tooltip("Hoe lang de bot bijna stil mag staan.")]
-    public float stuckTime = 2.5f;
-
-    [Tooltip("Hoe weinig beweging telt als vastzitten.")]
-    public float stuckDistance = 0.05f;
-
-
-    // ==================================================
-    // PRIVATE VARIABLES
-    // ==================================================
+    [Header("Debug")]
+    public bool showPath = true;
 
     private Transform[] waypoints;
-
     private int currentWaypoint = 0;
 
     private float currentSpeed = 0f;
-    private float currentSteering = 0f;
+    private float segmentProgress = 0f;
 
-    private Vector3 lastPosition;
-    private float stuckTimer = 0f;
+    private Vector3 startPoint;
+    private Vector3 endPoint;
 
-
-    // ==================================================
-    // START
-    // ==================================================
+    private bool finished = false;
 
     void Start()
     {
-        // Check Rigidbody
-        if (carRigidbody == null)
+        if (carRigidbody == null || racePath == null)
         {
             Debug.LogError(
-                gameObject.name +
-                ": Car Rigidbody is niet ingesteld!"
+                "RacingBot: Rigidbody of RacePath ontbreekt!"
             );
 
             enabled = false;
             return;
         }
 
-        // Check Forward Reference
-        if (forwardReference == null)
+        if (racePath.childCount < 2)
         {
             Debug.LogError(
-                gameObject.name +
-                ": Forward Reference is niet ingesteld!"
+                "RacingBot: Minimaal 2 waypoints nodig!"
             );
 
             enabled = false;
             return;
         }
 
-        // Check Race Path
-        if (racePath == null)
-        {
-            Debug.LogError(
-                gameObject.name +
-                ": Race Path is niet ingesteld!"
-            );
+        waypoints = new Transform[racePath.childCount];
 
-            enabled = false;
-            return;
-        }
-
-        // Waypoints ophalen
-        int waypointCount = racePath.childCount;
-
-        if (waypointCount == 0)
-        {
-            Debug.LogError(
-                gameObject.name +
-                ": RacePath heeft geen waypoints!"
-            );
-
-            enabled = false;
-            return;
-        }
-
-        waypoints = new Transform[waypointCount];
-
-        for (int i = 0; i < waypointCount; i++)
+        for (int i = 0; i < waypoints.Length; i++)
         {
             waypoints[i] = racePath.GetChild(i);
         }
 
-
-        // ==================================================
-        // RIGIDBODY SETTINGS
-        // ==================================================
-
-        carRigidbody.collisionDetectionMode =
-            CollisionDetectionMode.Continuous;
-
+        carRigidbody.isKinematic = true;
         carRigidbody.interpolation =
             RigidbodyInterpolation.Interpolate;
 
-        // Auto mag alleen over Y draaien
-        carRigidbody.constraints =
-            RigidbodyConstraints.FreezeRotationX |
-            RigidbodyConstraints.FreezeRotationZ;
-
-
-        // Zoek waypoint dat het dichtst bij de auto staat
-        FindClosestWaypoint();
-
-        lastPosition = carRigidbody.position;
+        // Start bij het dichtstbijzijnde segment
+        FindClosestSegment();
     }
-
-
-    // ==================================================
-    // FIXED UPDATE
-    // ==================================================
 
     void FixedUpdate()
     {
-        if (carRigidbody == null)
+        if (finished)
             return;
 
-        if (waypoints == null || waypoints.Length == 0)
-            return;
-
-        // Eerst checken of we waypoint bereikt hebben
-        UpdateWaypoint();
-
-        // AI stuurinput berekenen
-        float steeringInput = CalculateSteering();
-
-        // Rijden
-        HandleMovement();
-
-        // Sturen
-        HandleSteering(steeringInput);
-
-        // Vastgelopen?
-        HandleStuckDetection();
-    }
-
-
-    // ==================================================
-    // WAYPOINT
-    // ==================================================
-
-    void UpdateWaypoint()
-    {
-        Vector3 botPosition = carRigidbody.position;
-
-        Vector3 waypointPosition =
-            waypoints[currentWaypoint].position;
-
-        // Hoogte negeren
-        botPosition.y = 0f;
-        waypointPosition.y = 0f;
-
-        float distance =
-            Vector3.Distance(
-                botPosition,
-                waypointPosition
-            );
-
-        // Waypoint bereikt
-        if (distance <= waypointReachDistance)
-        {
-            currentWaypoint++;
-
-            // Laatste waypoint bereikt?
-            if (currentWaypoint >= waypoints.Length)
-            {
-                // Terug naar waypoint 0
-                currentWaypoint = 0;
-            }
-        }
-    }
-
-
-    // ==================================================
-    // STEERING CALCULATION
-    // ==================================================
-
-    float CalculateSteering()
-    {
-        // Een waypoint vooruit kijken maakt sturen soepeler
-        int targetIndex =
-            currentWaypoint + lookAheadPoints - 1;
-
-        targetIndex %= waypoints.Length;
-
-        Transform targetWaypoint =
-            waypoints[targetIndex];
-
-
-        // Richting naar waypoint
-        Vector3 directionToTarget =
-            targetWaypoint.position -
-            forwardReference.position;
-
-        directionToTarget.y = 0f;
-
-
-        if (directionToTarget.sqrMagnitude < 0.001f)
-            return 0f;
-
-
-        directionToTarget.Normalize();
-
-
-        // Richting waarin auto kijkt
-        Vector3 carForward =
-            forwardReference.forward;
-
-        carForward.y = 0f;
-
-        if (carForward.sqrMagnitude < 0.001f)
-            return 0f;
-
-        carForward.Normalize();
-
-
-        // Positief = rechts
-        // Negatief = links
-        float angle =
-            Vector3.SignedAngle(
-                carForward,
-                directionToTarget,
-                Vector3.up
-            );
-
-
-        // Hoek omzetten naar -1 / +1
-        float steeringInput =
-            angle / 45f;
-
-        steeringInput *= steeringSensitivity;
-
-        steeringInput =
-            Mathf.Clamp(
-                steeringInput,
-                -1f,
-                1f
-            );
-
-
-        return steeringInput;
-    }
-
-
-    // ==================================================
-    // MOVEMENT
-    // ==================================================
-
-    void HandleMovement()
-    {
-        float targetMaxSpeed = maxSpeed;
-
-
-        // ==============================================
-        // AUTOMATISCH REMMEN VOOR BOCHTEN
-        // ==============================================
-
-        if (slowDownForCorners)
-        {
-            Vector3 directionToWaypoint =
-                waypoints[currentWaypoint].position -
-                forwardReference.position;
-
-            directionToWaypoint.y = 0f;
-
-
-            Vector3 currentForward =
-                forwardReference.forward;
-
-            currentForward.y = 0f;
-
-
-            if (
-                directionToWaypoint.sqrMagnitude > 0.001f &&
-                currentForward.sqrMagnitude > 0.001f
-            )
-            {
-                float cornerAngle =
-                    Vector3.Angle(
-                        currentForward.normalized,
-                        directionToWaypoint.normalized
-                    );
-
-
-                if (cornerAngle >= cornerSlowDownAngle)
-                {
-                    targetMaxSpeed =
-                        maxSpeed *
-                        cornerSpeedMultiplier;
-                }
-            }
-        }
-
-
-        // ==============================================
-        // ACCELERATION
-        // ==============================================
-
-        float targetSpeed = targetMaxSpeed;
-
-        float accelerationRate;
-
-
-        if (targetSpeed > currentSpeed)
-        {
-            accelerationRate = acceleration;
-        }
-        else
-        {
-            accelerationRate = deceleration;
-        }
-
-
-        currentSpeed =
-            Mathf.MoveTowards(
-                currentSpeed,
-                targetSpeed,
-                accelerationRate *
-                Time.fixedDeltaTime
-            );
-
-
-        // ==============================================
-        // VOORUIT RIJDEN
-        // ==============================================
-
-        Vector3 moveForward =
-            forwardReference.forward;
-
-        moveForward.y = 0f;
-
-
-        if (moveForward.sqrMagnitude < 0.001f)
-            return;
-
-
-        moveForward.Normalize();
-
-
-        Vector3 movement =
-            moveForward *
-            currentSpeed *
-            Time.fixedDeltaTime;
-
-
-        carRigidbody.MovePosition(
-            carRigidbody.position +
-            movement
+        currentSpeed = Mathf.MoveTowards(
+            currentSpeed,
+            maxSpeed,
+            acceleration * Time.fixedDeltaTime
         );
+
+        MoveAlongPath();
     }
 
-
-    // ==================================================
-    // STEERING
-    // ==================================================
-
-    void HandleSteering(float steeringInput)
+    void FindClosestSegment()
     {
-        float steeringRate;
+        float closestDistance = Mathf.Infinity;
+        int closestIndex = 0;
+        float closestProgress = 0f;
 
+        int segmentCount = loopPath
+            ? waypoints.Length
+            : waypoints.Length - 1;
 
-        // AI is aan het sturen
-        if (Mathf.Abs(steeringInput) > 0.01f)
+        for (int i = 0; i < segmentCount; i++)
         {
-            steeringRate =
-                steeringAcceleration;
-        }
+            Vector3 a = waypoints[i].position;
+            Vector3 b = waypoints[
+                (i + 1) % waypoints.Length
+            ].position;
 
-        // AI gaat rechtdoor
-        else
-        {
-            steeringRate =
-                steeringReturnSpeed;
-        }
+            Vector3 segment = b - a;
 
+            float lengthSquared = segment.sqrMagnitude;
 
-        currentSteering =
-            Mathf.MoveTowards(
-                currentSteering,
-                steeringInput,
-                steeringRate *
-                Time.fixedDeltaTime
+            if (lengthSquared < 0.0001f)
+                continue;
+
+            float t = Mathf.Clamp01(
+                Vector3.Dot(
+                    carRigidbody.position - a,
+                    segment
+                ) / lengthSquared
             );
 
+            Vector3 closest = Vector3.Lerp(a, b, t);
 
-        // Niet sturen wanneer vrijwel stil
-        if (Mathf.Abs(currentSpeed) < 0.05f)
-            return;
-
-
-        // ==============================================
-        // STEERING STRENGTH
-        // ==============================================
-
-        float speedPercentage =
-            Mathf.Clamp01(
-                Mathf.Abs(currentSpeed) /
-                Mathf.Max(maxSpeed, 0.01f)
+            float distance = Vector3.SqrMagnitude(
+                carRigidbody.position - closest
             );
-
-
-        float steeringStrength =
-            Mathf.Lerp(
-                minimumSteeringStrength,
-                1f,
-                speedPercentage
-            );
-
-
-        float rotationAmount =
-            currentSteering *
-            maxRotationSpeed *
-            steeringStrength *
-            Time.fixedDeltaTime;
-
-
-        Quaternion rotation =
-            Quaternion.Euler(
-                0f,
-                rotationAmount,
-                0f
-            );
-
-
-        carRigidbody.MoveRotation(
-            carRigidbody.rotation *
-            rotation
-        );
-    }
-
-
-    // ==================================================
-    // FIND CLOSEST WAYPOINT
-    // ==================================================
-
-    void FindClosestWaypoint()
-    {
-        float closestDistance =
-            Mathf.Infinity;
-
-        int closestWaypointIndex = 0;
-
-
-        for (int i = 0; i < waypoints.Length; i++)
-        {
-            Vector3 botPosition =
-                carRigidbody.position;
-
-            Vector3 waypointPosition =
-                waypoints[i].position;
-
-
-            botPosition.y = 0f;
-            waypointPosition.y = 0f;
-
-
-            float distance =
-                Vector3.Distance(
-                    botPosition,
-                    waypointPosition
-                );
-
 
             if (distance < closestDistance)
             {
                 closestDistance = distance;
-
-                closestWaypointIndex = i;
+                closestIndex = i;
+                closestProgress = t;
             }
         }
 
+        currentWaypoint = closestIndex;
+        segmentProgress = closestProgress;
 
-        currentWaypoint =
-            closestWaypointIndex;
+        UpdateSegment();
     }
 
-
-    // ==================================================
-    // STUCK DETECTION
-    // ==================================================
-
-    void HandleStuckDetection()
+    void UpdateSegment()
     {
-        if (!enableStuckRecovery)
-            return;
+        startPoint = waypoints[currentWaypoint].position;
 
+        int nextIndex =
+            (currentWaypoint + 1) % waypoints.Length;
 
-        float distanceMoved =
-            Vector3.Distance(
-                carRigidbody.position,
-                lastPosition
-            );
-
-
-        if (distanceMoved <= stuckDistance)
-        {
-            stuckTimer +=
-                Time.fixedDeltaTime;
-        }
-        else
-        {
-            stuckTimer = 0f;
-        }
-
-
-        if (stuckTimer >= stuckTime)
-        {
-            // Opnieuw logisch waypoint zoeken
-            FindClosestWaypoint();
-
-            // Snelheid resetten
-            currentSpeed = 0f;
-
-            stuckTimer = 0f;
-        }
-
-
-        lastPosition =
-            carRigidbody.position;
+        endPoint = waypoints[nextIndex].position;
     }
 
+    void MoveAlongPath()
+    {
+        float distanceToMove =
+            currentSpeed * Time.fixedDeltaTime;
 
-    // ==================================================
-    // DEBUG PATH
-    // ==================================================
+        int safety = 0;
+
+        while (distanceToMove > 0f && safety < 1000)
+        {
+            safety++;
+
+            float segmentLength =
+                Vector3.Distance(startPoint, endPoint);
+
+            if (segmentLength < 0.0001f)
+            {
+                if (!NextSegment())
+                    break;
+
+                continue;
+            }
+
+            float remainingDistance =
+                segmentLength * (1f - segmentProgress);
+
+            if (distanceToMove >= remainingDistance)
+            {
+                distanceToMove -= remainingDistance;
+
+                segmentProgress = 1f;
+
+                if (!NextSegment())
+                    break;
+            }
+            else
+            {
+                segmentProgress +=
+                    distanceToMove / segmentLength;
+
+                distanceToMove = 0f;
+            }
+        }
+
+        Vector3 targetPosition = Vector3.Lerp(
+            startPoint,
+            endPoint,
+            segmentProgress
+        );
+
+        targetPosition += Vector3.up * heightOffset;
+
+        carRigidbody.MovePosition(targetPosition);
+
+        // Richt de auto naar de volgende waypoint
+        Vector3 direction = endPoint - startPoint;
+
+        direction.y = 0f;
+
+        if (direction.sqrMagnitude > 0.001f)
+        {
+            Quaternion targetRotation =
+                Quaternion.LookRotation(
+                    direction.normalized,
+                    Vector3.up
+                );
+
+            Quaternion newRotation =
+                Quaternion.RotateTowards(
+                    carRigidbody.rotation,
+                    targetRotation,
+                    rotationSpeed * Time.fixedDeltaTime
+                );
+
+            carRigidbody.MoveRotation(newRotation);
+        }
+    }
+
+    bool NextSegment()
+    {
+        currentWaypoint++;
+
+        if (currentWaypoint >= waypoints.Length)
+        {
+            if (loopPath)
+            {
+                currentWaypoint = 0;
+            }
+            else
+            {
+                currentWaypoint = waypoints.Length - 2;
+                segmentProgress = 1f;
+                finished = true;
+                currentSpeed = 0f;
+                UpdateSegment();
+                return false;
+            }
+        }
+
+        // Bij een open pad is het laatste punt het eindpunt
+        if (!loopPath &&
+            currentWaypoint >= waypoints.Length - 1)
+        {
+            currentWaypoint = waypoints.Length - 2;
+            segmentProgress = 1f;
+            finished = true;
+            currentSpeed = 0f;
+            UpdateSegment();
+            return false;
+        }
+
+        segmentProgress = 0f;
+        UpdateSegment();
+
+        return true;
+    }
 
     void OnDrawGizmosSelected()
     {
-        if (racePath == null)
+        if (!showPath || racePath == null)
             return;
 
-        if (racePath.childCount == 0)
+        int count = racePath.childCount;
+
+        if (count < 2)
             return;
 
+        Gizmos.color = Color.green;
 
-        for (int i = 0; i < racePath.childCount; i++)
+        int segmentCount = loopPath
+            ? count
+            : count - 1;
+
+        for (int i = 0; i < segmentCount; i++)
         {
-            Transform point =
-                racePath.GetChild(i);
-
-
-            int nextIndex =
-                (i + 1) %
-                racePath.childCount;
-
-
-            Transform nextPoint =
-                racePath.GetChild(nextIndex);
-
-
-            // Punt tekenen
-            Gizmos.DrawSphere(
-                point.position,
-                0.3f
+            Transform a = racePath.GetChild(i);
+            Transform b = racePath.GetChild(
+                (i + 1) % count
             );
 
-
-            // Lijn naar volgende punt
-            Gizmos.DrawLine(
-                point.position,
-                nextPoint.position
-            );
+            Gizmos.DrawSphere(a.position, 0.25f);
+            Gizmos.DrawLine(a.position, b.position);
         }
+
+        Gizmos.DrawSphere(
+            racePath.GetChild(count - 1).position,
+            0.25f
+        );
     }
 }
